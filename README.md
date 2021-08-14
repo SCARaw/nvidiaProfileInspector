@@ -17,3 +17,4 @@ For more information how to use this tool, you can find some very good wikis her
 [https://www.pcgamingwiki.com/wiki/Nvidia_Profile_Inspector](https://www.pcgamingwiki.com/wiki/Nvidia_Profile_Inspector)
 
 ![presentation](https://cdn.discordapp.com/attachments/813523588127916082/814189537970487382/unknown.png)
+This image looks terrible, i will give you better one later...
