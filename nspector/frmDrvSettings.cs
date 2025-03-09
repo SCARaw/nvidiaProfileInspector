@@ -39,6 +39,8 @@ namespace nspector
 
         public string _CurrentProfile = "";
 
+        private bool isDevMode = false;
+
         protected override void WndProc(ref Message m)
         {
             switch (m.Msg)
@@ -76,9 +78,12 @@ namespace nspector
         {
             var group = FindOrCreateGroup(setting.GroupName);
 
-            var item = new ListViewItem(setting.SettingText);
+            var settingName = isDevMode ? $"0x{setting.SettingId:X8} {setting.SettingText}" : setting.SettingText;
+
+            var item = new ListViewItem(settingName);
             item.Tag = setting.SettingId;
             item.Group = group;
+            
             item.SubItems.Add(setting.ValueText);
             item.SubItems.Add(setting.ValueRaw);
 
@@ -152,6 +157,8 @@ namespace nspector
 
                 foreach (var settingItem in _currentProfileSettingItems)
                 {
+                    if (settingItem.IsSettingHidden) continue;
+
                     var itm = lvSettings.Items.Add(CreateListViewItem(settingItem));
                     if (Debugger.IsAttached && !settingItem.IsApiExposed)
                     {
@@ -212,6 +219,8 @@ namespace nspector
 
                     cbValues.BeginUpdate();
 
+                    tsbBitValueEditor.Enabled = false;
+
                     cbValues.Items.Clear();
                     cbValues.Tag = lvSettings.SelectedItems[0].Tag;
                     uint settingid = (uint)lvSettings.SelectedItems[0].Tag;
@@ -233,6 +242,10 @@ namespace nspector
                                 cbValues.Items.Add(itm);
 
                             }
+
+                            tsbBitValueEditor.Enabled = valueNames.Count > 0;
+
+                            
                         }
 
                         if (settingMeta.SettingType == Native.NVAPI2.NVDRS_SETTING_TYPE.NVDRS_WSTRING_TYPE && settingMeta.StringValues != null)
@@ -248,13 +261,6 @@ namespace nspector
                             foreach (string v in valueNames)
                                 cbValues.Items.Add(v);
                         }
-
-                        var scannedCount = settingMeta?.DwordValues?
-                            .Where(x => x.ValueSource == Common.Meta.SettingMetaSource.ScannedSettings)
-                            .Count();
-
-                        tsbBitValueEditor.Enabled = scannedCount > 0;
-
                     }
 
                     if (cbValues.Items.Count < 1)
@@ -263,6 +269,21 @@ namespace nspector
                         cbValues.Items.RemoveAt(0);
                     }
 
+
+                    var referenceSettings = DrsServiceLocator.ReferenceSettings?.Settings.FirstOrDefault(s => s.SettingId == settingid);
+
+                    if (string.IsNullOrEmpty(settingMeta.Description) && !(referenceSettings?.HasConstraints ?? false))
+                    {
+                        tbSettingDescription.Text = "";
+                        tbSettingDescription.Visible = false;
+                        tbSettingDescription.BackColor = SystemColors.Control;
+                    }
+                    else
+                    {
+                        tbSettingDescription.Text = settingMeta.Description;
+                        tbSettingDescription.Visible = true;
+                        tbSettingDescription.BackColor = (referenceSettings?.HasConstraints ?? false) ? Color.LightCoral : SystemColors.Control;
+                    }
 
                     cbValues.Text = lvSettings.SelectedItems[0].SubItems[1].Text;
                     cbValues.EndUpdate();
@@ -336,6 +357,7 @@ namespace nspector
                     var stringBehind = DrsUtil.ParseStringSettingValue(settingMeta, cbValueText);
                     valueHasChanged = currentProfileItem.ValueRaw != stringBehind;
                 }
+
 
                 if (valueHasChanged || activeImages.Contains(lvItem.ImageIndex))
                 {
@@ -424,6 +446,22 @@ namespace nspector
             }
         }
 
+        private void DeleteSelectedValue()
+        {
+            if (lvSettings.SelectedItems != null && lvSettings.SelectedItems.Count > 0)
+            {
+                var settingId = (uint)lvSettings.SelectedItems[0].Tag;
+
+                bool removeFromModified;
+                _drs.DeleteValue(_CurrentProfile, settingId, out removeFromModified);
+
+                if (removeFromModified)
+                    RemoveFromModifiedProfiles(_CurrentProfile);
+
+                RefreshCurrentProfile();
+            }
+        }
+
         private void InitTaskbarList()
         {
             if (Environment.OSVersion.Version.Major >= 6 && Environment.OSVersion.Version.Minor >= 1)
@@ -461,7 +499,8 @@ namespace nspector
             var numberFormat = new NumberFormatInfo() { NumberDecimalSeparator = "." };
             var version = Assembly.GetExecutingAssembly().GetName().Version;
             var fileVersionInfo = FileVersionInfo.GetVersionInfo(Assembly.GetExecutingAssembly().Location);
-            Text = $"{Application.ProductName} {version} - Geforce {_drs.DriverVersion.ToString("#.00", numberFormat)} - Profile Settings - {fileVersionInfo.LegalCopyright}";
+            var externalCsn = DrsServiceLocator.IsExternalCustomSettings ? " - CSN OVERRIDE!" : "";
+            Text = $"{Application.ProductName} {version} - Geforce {_drs.DriverVersion.ToString("#.00", numberFormat)} - Profile Settings - {fileVersionInfo.LegalCopyright}{externalCsn}";
         }
 
         private static void InitMessageFilter(IntPtr handle)
@@ -494,8 +533,16 @@ namespace nspector
             Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         }
 
+        public static double ScaleFactor = 1;
+
         private void SetupDpiAdjustments()
         {
+            ScaleFactor = lblWidth330.Width / 330;
+
+            // Later Windows versions changed DPI scaling method, check with Graphics and use it if larger
+            using (Graphics g = CreateGraphics())
+                ScaleFactor = Math.Max(ScaleFactor, Math.Max(g.DpiX / 96f, g.DpiY / 96f));
+
             chSettingID.Width = lblWidth330.Width;
             chSettingValueHex.Width = lblWidth96.Width;
         }
@@ -580,8 +627,13 @@ namespace nspector
 
         private void btnResetValue_Click(object sender, EventArgs e)
         {
-            ResetSelectedValue();
+            if (Control.ModifierKeys == Keys.Control)
+                DeleteSelectedValue();
+            else
+                ResetSelectedValue();
         }
+
+        ToolTip appPathsTooltip = new ToolTip() { InitialDelay = 250 };
 
         private void ChangeCurrentProfile(string profileName)
         {
@@ -592,6 +644,7 @@ namespace nspector
                 tsbDeleteProfile.Enabled = false;
                 tsbAddApplication.Enabled = false;
                 tssbRemoveApplication.Enabled = false;
+                appPathsTooltip.SetToolTip(lblApplications, "");
             }
             else
             {
@@ -599,8 +652,8 @@ namespace nspector
                 tsbDeleteProfile.Enabled = true;
                 tsbAddApplication.Enabled = true;
                 tssbRemoveApplication.Enabled = true;
+                appPathsTooltip.SetToolTip(lblApplications, "Double-click to add application");
             }
-
 
             RefreshCurrentProfile();
         }
@@ -762,7 +815,15 @@ namespace nspector
                 }
             }
             else
-                ResetCurrentProfile();
+            {
+                if (MessageBox.Show(this,
+                    "Restore profile to NVIDIA driver defaults?",
+                    "Restore profile",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                {
+                    ResetCurrentProfile();
+                }
+            }
         }
 
         private void tsbRefreshProfile_Click(object sender, EventArgs e)
@@ -873,15 +934,24 @@ namespace nspector
 
         private void tsbAddApplication_Click(object sender, EventArgs e)
         {
-            var openDialog = new OpenFileDialog();
-            openDialog.DefaultExt = "*.exe";
-            openDialog.Filter = "Application EXE Name|*.exe|Application Absolute Path|*.exe";
+            if (_CurrentProfile == GetBaseProfileName() || _CurrentProfile == _baseProfileName)
+                return;
 
-            if (openDialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            var applications = new Dictionary<string, string>();
+            _currentProfileSettingItems = _drs.GetSettingsForProfile(_CurrentProfile, GetSettingViewMode(), ref applications);
+
+            var existingPaths = new HashSet<string>(applications.Values, StringComparer.OrdinalIgnoreCase);
+            var applicationName = "";
+
+            if (InputBox.Show("Add Application", "Enter an application path/filename/UWP ID to add to the profile:", ref applicationName, new List<string>(), "", 2048, true) == DialogResult.OK)
             {
-                string applicationName = new FileInfo(openDialog.FileName).Name;
-                if (openDialog.FilterIndex == 2)
-                    applicationName = openDialog.FileName;
+                // Add new application path
+                if (existingPaths.Contains(applicationName))
+                {
+                    MessageBox.Show("This application is already assigned to this profile!",
+                        "Error adding Application", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
 
                 try
                 {
@@ -892,25 +962,26 @@ namespace nspector
                     if (ex.Status == Native.NVAPI2.NvAPI_Status.NVAPI_EXECUTABLE_ALREADY_IN_USE || ex.Status == Native.NVAPI2.NvAPI_Status.NVAPI_ERROR)
                     {
                         if (lblApplications.Text.ToUpper().IndexOf(" " + applicationName.ToUpper() + ",") != -1)
-                            MessageBox.Show("This application executable is already assigned to this profile!",
+                            MessageBox.Show("This application is already assigned to this profile!",
                                 "Error adding Application", MessageBoxButtons.OK, MessageBoxIcon.Error);
                         else
                         {
                             string profileNames = _scanner.FindProfilesUsingApplication(applicationName);
                             if (profileNames == "")
-                                MessageBox.Show("This application executable might already be assigned to another profile!",
+                                MessageBox.Show("This application might already be assigned to another profile!",
                                     "Error adding Application", MessageBoxButtons.OK, MessageBoxIcon.Error);
                             else
                                 MessageBox.Show(
-                                    "This application executable is already assigned to the following profiles: " +
+                                    "This application is already assigned to the following profiles: " +
                                     profileNames, "Error adding Application", MessageBoxButtons.OK, MessageBoxIcon.Error);
                         }
                     }
                     else
                         throw;
                 }
+
+                RefreshCurrentProfile();
             }
-            RefreshCurrentProfile();
         }
 
         private void tssbRemoveApplication_DropDownItemClicked(object sender, ToolStripItemClickedEventArgs e)
@@ -1115,7 +1186,7 @@ namespace nspector
             if (files.Length == 1)
             {
                 var fileInfo = new FileInfo(files[0]);
-                if (fileInfo.Extension.ToLower().Equals(".nip"))
+                if (fileInfo.Extension.ToLowerInvariant().Equals(".nip"))
                 {
                     ImportProfiles(fileInfo.FullName);
                     return;
@@ -1151,11 +1222,12 @@ namespace nspector
 
         private void lvSettings_DoubleClick(object sender, EventArgs e)
         {
-            if (Debugger.IsAttached && lvSettings.SelectedItems != null && lvSettings.SelectedItems.Count == 1)
+            if (isDevMode && lvSettings.SelectedItems != null && lvSettings.SelectedItems.Count == 1)
             {
                 var settingId = ((uint)lvSettings.SelectedItems[0].Tag);
                 var settingName = lvSettings.SelectedItems[0].Text;
-                Clipboard.SetText(string.Format($"0x{settingId:X8} {settingName}"));
+                //Clipboard.SetText(string.Format($"0x{settingId:X8} {settingName}"));
+                Clipboard.SetText(string.Format($"{settingName}"));
             }
         }
 
@@ -1222,7 +1294,115 @@ namespace nspector
             {
                 CopyModifiedSettingsToClipBoard();
             }
+
+            if (e.Control && e.Alt && e.KeyCode == Keys.D)
+            {
+                EnableDevmode();
+            }
+
+            if (Debugger.IsAttached && e.Control && e.KeyCode == Keys.T)
+            {
+                TestStoreSettings();
+            }
+
+            if (e.Control && e.KeyCode == Keys.F)
+            {
+                SearchSetting();
+            }
+
+            if (e.KeyCode == Keys.Escape)
+            {
+                RefreshCurrentProfile();
+            }
+
+
         }
+
+        private void SearchSetting()
+        {
+            string inputString = "";
+            if (InputBox.Show("Search Setting", "Please enter setting name:", ref inputString, new List<string>(), "", 2048) == System.Windows.Forms.DialogResult.OK)
+            {
+                var lowerInput = inputString.Trim().ToLowerInvariant();
+                lvSettings.BeginUpdate();
+                foreach(ListViewItem itm in lvSettings.Items)
+                {
+                    if (!itm.Text.ToLowerInvariant().Contains(lowerInput))
+                    {
+                        itm.Remove();
+                    }
+                }
+                lvSettings.EndUpdate();
+            }
+            
+        }
+
+        private void EnableDevmode()
+        {
+            isDevMode = true;
+            lvSettings.Font = new Font("Consolas", 9);
+            cbValues.Font = new Font("Consolas", 9);
+            lvSettings.HeaderStyle = ColumnHeaderStyle.Nonclickable;
+            RefreshCurrentProfile();
+        }
+
+        private void TestStoreSettings()
+        {
+            var sbSettings = new StringBuilder();
+            sbSettings.AppendFormat("{0,-40} {1}\r\n", "### Inspector Store Failed ###", _CurrentProfile);
+
+            pbMain.Minimum = 0;
+            pbMain.Maximum = lvSettings.Items.Count;
+            int cntIndex = 0;
+
+            foreach (ListViewGroup group in lvSettings.Groups)
+            {
+                bool groupTitleAdded = false;
+                foreach (ListViewItem item in group.Items)
+                {
+
+                    try
+                    {
+                        pbMain.Value = cntIndex++;
+
+                        var settingId = (uint)item.Tag;
+                        var meta = _meta.GetSettingMeta(settingId);
+                        if (meta.SettingType != NVDRS_SETTING_TYPE.NVDRS_DWORD_TYPE) continue;
+
+                        var wasNotSet = new int[] { 1, 2, 3 }.Contains(item.ImageIndex);
+                        
+                        if (wasNotSet)
+                        {
+                            _drs.SetDwordValueToProfile(_CurrentProfile, settingId, 0x0);
+                            _drs.ResetValue(_CurrentProfile, settingId, out var rm);
+                        }
+                        else
+                        {
+                            var tmpValue = _drs.GetDwordValueFromProfile(_CurrentProfile, settingId);
+                            _drs.SetDwordValueToProfile(_CurrentProfile, settingId, 0x0);
+                            _drs.SetDwordValueToProfile(_CurrentProfile, settingId, tmpValue);
+                        }
+
+                    }
+                    catch (NvapiException ne)
+                    {
+                        if (!groupTitleAdded)
+                        {
+                            sbSettings.AppendFormat("\r\n[{0}]\r\n", group.Header);
+                            groupTitleAdded = true;
+                        }
+                        sbSettings.AppendFormat("{0,-40} SettingId: {1} Failed: {2}\r\n", item.Text, DrsUtil.GetDwordString((uint)item.Tag), ne.Status);
+                    }
+                }
+            }
+
+            pbMain.Value = 0;
+
+            Clipboard.SetText(sbSettings.ToString());
+            MessageBox.Show("Failed Settings Stored to Clipboard");
+
+        }
+
 
         private void CopyModifiedSettingsToClipBoard()
         {

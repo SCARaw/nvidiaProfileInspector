@@ -17,7 +17,7 @@ namespace nspector.Common
         public static uint ParseDwordByInputSafe(string input)
         {
             uint result = 0;
-            if (input.ToLower().StartsWith("0x"))
+            if (input.ToLowerInvariant().StartsWith("0x"))
             {
                 try
                 {
@@ -53,7 +53,7 @@ namespace nspector.Common
 
         internal static string ParseStringSettingValue(SettingMeta meta, string text)
         {
-            var valueByName = meta.StringValues.FirstOrDefault(x => x.ValueName != null && x.ValueName.Equals(text));
+            var valueByName = meta.StringValues?.FirstOrDefault(x => x.ValueName != null && x.ValueName.Equals(text));
             if (valueByName != null)
                 return valueByName.Value;
 
